@@ -73,7 +73,7 @@ if "items" in channel_response:
         )
 
 # -------------------------------------------------
-# Smart Reaction Detection Function
+# Smart Reaction Detection
 # -------------------------------------------------
 def looks_like_reaction(title):
 
@@ -114,20 +114,16 @@ def looks_like_reaction(title):
 
     score = 0
 
-    # Direct keyword match
     if any(word in title_lower for word in reaction_keywords):
         score += 2
 
-    # Emotional signals
     if any(pattern in title_lower for pattern in emotional_patterns):
         score += 1
 
-    # ALL CAPS emphasis detection
     words = title.split()
     if any(word.isupper() and len(word) > 3 for word in words):
         score += 1
 
-    # Excess punctuation
     if title.count("!") >= 2 or title.count("?") >= 2:
         score += 1
 
@@ -136,9 +132,7 @@ def looks_like_reaction(title):
 # -------------------------------------------------
 # Filters
 # -------------------------------------------------
-blocked_categories = [
-    "Music"
-]
+blocked_categories = ["Music"]
 
 blacklist_keywords = [
     "official music video",
@@ -156,6 +150,8 @@ blacklist_keywords = [
 # -------------------------------------------------
 # Process Videos
 # -------------------------------------------------
+videos_data = []
+
 for item in response["items"]:
 
     title = item["snippet"]["title"]
@@ -168,7 +164,10 @@ for item in response["items"]:
     channel_id = item["snippet"]["channelId"]
 
     subscriber_count = channel_map.get(channel_id, 0)
+
     views = int(item["statistics"].get("viewCount", 0))
+    likes = int(item["statistics"].get("likeCount", 0))
+    comments = int(item["statistics"].get("commentCount", 0))
 
     # Calculate hours since publish
     published = item["snippet"]["publishedAt"]
@@ -184,31 +183,63 @@ for item in response["items"]:
 
     is_reaction = looks_like_reaction(title)
 
-    # Block Music unless reaction
     if category_name in blocked_categories and not is_reaction:
         continue
 
-    # Remove Shorts
     if "M" not in duration and "H" not in duration:
         continue
 
-    # Remove blacklisted unless reaction
     if any(word in title_lower for word in blacklist_keywords) and not is_reaction:
         continue
 
-    # Remove very large channels
-    if subscriber_count > 1_000_000:
+    if subscriber_count > 5_000_000:
         continue
 
-    # Remove older videos
     if hours_since_publish > 96:
         continue
 
-    # ------------------------------------------------
+    # ---------------- TrendPulse Score ----------------
+
+    relative_velocity = (views / max(subscriber_count, 1)) / max(hours_since_publish, 1)
+
+    engagement_rate = (likes + comments) / max(views, 1)
+
+    size_boost = 1 - min(subscriber_count / 5_000_000, 1)
+
+    reaction_bonus = 1 if is_reaction else 0
+
+    trend_pulse = (
+        (relative_velocity * 50) +
+        (engagement_rate * 30) +
+        (size_boost * 15) +
+        (reaction_bonus * 5)
+    )
+
+    videos_data.append({
+        "title": title,
+        "category": category_name,
+        "subs": subscriber_count,
+        "views": views,
+        "hours": hours_since_publish,
+        "score": trend_pulse
+}   )
+
+
+
+# -------------------------------------------------
+# Sort by TrendPulse Score
+# -------------------------------------------------
+videos_data.sort(key=lambda x: x["score"], reverse=True)
+
+# -------------------------------------------------
+# Print Results
+# -------------------------------------------------
+for video in videos_data:
 
     print("=" * 80)
-    print("Title:", title)
-    print("Category:", category_name)
-    print("Subscribers:", subscriber_count)
-    print("Views:", views)
-    print("Hours Since Publish:", round(hours_since_publish, 2))
+    print("Title:", video["title"])
+    print("Category:", video["category"])
+    print("Subscribers:", video["subs"])
+    print("Views:", video["views"])
+    print("Hours Since Publish:", round(video["hours"], 2))
+    print("TrendPulse Score:", round(video["score"], 2))
