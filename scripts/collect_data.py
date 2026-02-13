@@ -1,4 +1,5 @@
 import os
+import math
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
 from datetime import datetime, timezone
@@ -68,12 +69,16 @@ channel_map = {}
 
 if "items" in channel_response:
     for ch in channel_response["items"]:
-        channel_map[ch["id"]] = int(
-            ch["statistics"].get("subscriberCount", 0)
-        )
+        stats = ch.get("statistics", {})
+
+        # Skip channels hiding subscriber count
+        if "subscriberCount" not in stats:
+            continue
+
+        channel_map[ch["id"]] = int(stats["subscriberCount"])
 
 # -------------------------------------------------
-# Smart Reaction Detection
+# Reaction Detection
 # -------------------------------------------------
 def looks_like_reaction(title):
 
@@ -157,19 +162,30 @@ for item in response["items"]:
     title = item["snippet"]["title"]
     title_lower = title.lower()
 
-    category_id = item["snippet"].get("categoryId", "Unknown")
+    category_id = item["snippet"].get("categoryId")
     category_name = category_map.get(category_id, "Unknown")
 
     duration = item["contentDetails"]["duration"]
     channel_id = item["snippet"]["channelId"]
 
-    subscriber_count = channel_map.get(channel_id, 0)
+    # Skip if channel stats missing (hidden subs)
+    subscriber_count = channel_map.get(channel_id)
+    if subscriber_count is None:
+        continue
 
-    views = int(item["statistics"].get("viewCount", 0))
-    likes = int(item["statistics"].get("likeCount", 0))
-    comments = int(item["statistics"].get("commentCount", 0))
+    # Validate video stats
+    stats = item.get("statistics", {})
+    if "viewCount" not in stats:
+        continue
 
-    # Calculate hours since publish
+    views = int(stats["viewCount"])
+    if views == 0:
+        continue
+
+    likes = int(stats.get("likeCount", 0))
+    comments = int(stats.get("commentCount", 0))
+
+    # Time calculation
     published = item["snippet"]["publishedAt"]
     published_time = datetime.fromisoformat(
         published.replace("Z", "+00:00")
@@ -179,7 +195,7 @@ for item in response["items"]:
         now - published_time
     ).total_seconds() / 3600
 
-    # ---------------- FILTER LOGIC ----------------
+    # ---------------- FILTERS ----------------
 
     is_reaction = looks_like_reaction(title)
 
@@ -198,21 +214,21 @@ for item in response["items"]:
     if hours_since_publish > 96:
         continue
 
-    # ---------------- TrendPulse Score ----------------
+    # ---------------- TrendPulse Calculation ----------------
 
-    relative_velocity = (views / max(subscriber_count, 1)) / max(hours_since_publish, 1)
+    relative_velocity = (
+        math.log1p(views) /
+        (math.log1p(subscriber_count + 1) * max(hours_since_publish, 1))
+    )
 
-    engagement_rate = (likes + comments) / max(views, 1)
+    engagement_rate = (likes + comments) / views
 
     size_boost = 1 - min(subscriber_count / 5_000_000, 1)
 
-    reaction_bonus = 1 if is_reaction else 0
-
     trend_pulse = (
-        (relative_velocity * 50) +
+        (relative_velocity * 40) +
         (engagement_rate * 30) +
-        (size_boost * 15) +
-        (reaction_bonus * 5)
+        (size_boost * 20)
     )
 
     videos_data.append({
@@ -220,11 +236,11 @@ for item in response["items"]:
         "category": category_name,
         "subs": subscriber_count,
         "views": views,
+        "likes": likes,
+        "comments": comments,
         "hours": hours_since_publish,
         "score": trend_pulse
-}   )
-
-
+    })
 
 # -------------------------------------------------
 # Sort by TrendPulse Score
@@ -241,5 +257,7 @@ for video in videos_data:
     print("Category:", video["category"])
     print("Subscribers:", video["subs"])
     print("Views:", video["views"])
+    print("Likes:", video["likes"])
+    print("Comments:", video["comments"])
     print("Hours Since Publish:", round(video["hours"], 2))
     print("TrendPulse Score:", round(video["score"], 2))
