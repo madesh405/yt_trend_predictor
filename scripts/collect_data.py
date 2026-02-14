@@ -1,81 +1,10 @@
 import os
 import math
+import csv
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-# -------------------------------------------------
-# Load API Key
-# -------------------------------------------------
-load_dotenv()
-API_KEY = os.getenv("YOUTUBE_API_KEY")
-
-if not API_KEY:
-    raise ValueError("API key not found.")
-
-youtube = build("youtube", "v3", developerKey=API_KEY)
-
-region = input("Enter region code (IN, US, GB, etc.): ").upper()
-
-print("\nFiltered Trending Candidates\n")
-
-# -------------------------------------------------
-# Fetch Category Mapping
-# -------------------------------------------------
-category_request = youtube.videoCategories().list(
-    part="snippet",
-    regionCode=region
-)
-
-category_response = category_request.execute()
-
-category_map = {}
-if "items" in category_response:
-    for item in category_response["items"]:
-        category_map[item["id"]] = item["snippet"]["title"]
-
-# -------------------------------------------------
-# Fetch Trending Videos
-# -------------------------------------------------
-request = youtube.videos().list(
-    part="snippet,statistics,contentDetails",
-    chart="mostPopular",
-    regionCode=region,
-    maxResults=50
-)
-
-response = request.execute()
-
-if "items" not in response:
-    print("Error fetching trending videos.")
-    exit()
-
-# -------------------------------------------------
-# Batch Fetch Channel Statistics
-# -------------------------------------------------
-channel_ids = list(set(
-    item["snippet"]["channelId"]
-    for item in response["items"]
-))
-
-channel_request = youtube.channels().list(
-    part="statistics",
-    id=",".join(channel_ids)
-)
-
-channel_response = channel_request.execute()
-
-channel_map = {}
-
-if "items" in channel_response:
-    for ch in channel_response["items"]:
-        stats = ch.get("statistics", {})
-
-        # Skip channels hiding subscriber count
-        if "subscriberCount" not in stats:
-            continue
-
-        channel_map[ch["id"]] = int(stats["subscriberCount"])
 
 # -------------------------------------------------
 # Reaction Detection
@@ -85,36 +14,23 @@ def looks_like_reaction(title):
     title_lower = title.lower()
 
     reaction_keywords = [
-        "reaction", "reacts", "live reaction",
-        "first time watching",
-        "watching for the first time",
-        "first listen",
-        "first time hearing",
-        "my honest thoughts",
-        "this made me cry",
-        "i was not ready",
-        "this broke me",
-        "speechless",
-        "i lost it",
-        "this hit different",
-        "mind blown",
-        "unbelievable",
-        "did not expect",
-        "didn't expect",
-        "no way",
-        "my thoughts on",
-        "thoughts on",
-        "breaking down",
-        "let's talk about",
-        "reviewing",
-        "live watch"
+        "reaction","reacts","live reaction",
+        "first time watching","watching for the first time",
+        "first listen","first time hearing",
+        "my honest thoughts","this made me cry",
+        "i was not ready","this broke me",
+        "speechless","i lost it",
+        "this hit different","mind blown",
+        "unbelievable","did not expect",
+        "didn't expect","no way",
+        "my thoughts on","thoughts on",
+        "breaking down","let's talk about",
+        "reviewing","live watch"
     ]
 
     emotional_patterns = [
-        "??", "!!",
-        "what", "crazy",
-        "insane", "shocked",
-        "unexpected", "wild"
+        "??","!!","what","crazy",
+        "insane","shocked","unexpected","wild"
     ]
 
     score = 0
@@ -134,130 +50,180 @@ def looks_like_reaction(title):
 
     return score >= 2
 
+
 # -------------------------------------------------
 # Filters
 # -------------------------------------------------
 blocked_categories = ["Music"]
 
 blacklist_keywords = [
-    "official music video",
-    "lyrics",
-    "cover",
-    "remix",
-    "live performance",
-    "concert",
-    "music video",
-    "trailer",
-    "teaser",
-    "song"
+    "official music video","lyrics","cover","remix",
+    "live performance","concert","music video",
+    "trailer","teaser","song"
 ]
 
+
 # -------------------------------------------------
-# Process Videos
+# Load API
 # -------------------------------------------------
-videos_data = []
+load_dotenv()
+API_KEY = os.getenv("YOUTUBE_API_KEY")
 
-for item in response["items"]:
+youtube = build("youtube", "v3", developerKey=API_KEY)
 
-    title = item["snippet"]["title"]
-    title_lower = title.lower()
+region = input("Enter region code (IN, US, GB, etc.): ").upper()
 
-    category_id = item["snippet"].get("categoryId")
-    category_name = category_map.get(category_id, "Unknown")
+dataset = []
 
-    duration = item["contentDetails"]["duration"]
-    channel_id = item["snippet"]["channelId"]
+# Target sample sizes (balanced dataset).
+TRENDING_TARGET = 260
+NON_TRENDING_TARGET = 260
 
-    # Skip if channel stats missing (hidden subs)
-    subscriber_count = channel_map.get(channel_id)
-    if subscriber_count is None:
-        continue
 
-    # Validate video stats
-    stats = item.get("statistics", {})
-    if "viewCount" not in stats:
-        continue
+# -------------------------------------------------
+# 1️⃣ Collect TRENDING Videos (label=1)
+# -------------------------------------------------
+print("\nCollecting Trending Videos...\n")
 
-    views = int(stats["viewCount"])
-    if views == 0:
-        continue
+next_page_token = None
 
-    likes = int(stats.get("likeCount", 0))
-    comments = int(stats.get("commentCount", 0))
+while len(dataset) < TRENDING_TARGET:
 
-    # Time calculation
-    published = item["snippet"]["publishedAt"]
-    published_time = datetime.fromisoformat(
-        published.replace("Z", "+00:00")
-    )
-    now = datetime.now(timezone.utc)
-    hours_since_publish = (
-        now - published_time
-    ).total_seconds() / 3600
-
-    # ---------------- FILTERS ----------------
-
-    is_reaction = looks_like_reaction(title)
-
-    if category_name in blocked_categories and not is_reaction:
-        continue
-
-    if "M" not in duration and "H" not in duration:
-        continue
-
-    if any(word in title_lower for word in blacklist_keywords) and not is_reaction:
-        continue
-
-    if subscriber_count > 5_000_000:
-        continue
-
-    if hours_since_publish > 96:
-        continue
-
-    # ---------------- TrendPulse Calculation ----------------
-
-    relative_velocity = (
-        math.log1p(views) /
-        (math.log1p(subscriber_count + 1) * max(hours_since_publish, 1))
+    request = youtube.videos().list(
+        part="snippet,statistics,contentDetails",
+        chart="mostPopular",
+        regionCode=region,
+        maxResults=50,
+        pageToken=next_page_token
     )
 
-    engagement_rate = (likes + comments) / views
+    response = request.execute()
 
-    size_boost = 1 - min(subscriber_count / 5_000_000, 1)
+    if "items" not in response:
+        break
 
-    trend_pulse = (
-        (relative_velocity * 40) +
-        (engagement_rate * 30) +
-        (size_boost * 20)
-    )
+    for item in response["items"]:
 
-    videos_data.append({
-        "title": title,
-        "category": category_name,
-        "subs": subscriber_count,
-        "views": views,
-        "likes": likes,
-        "comments": comments,
-        "hours": hours_since_publish,
-        "score": trend_pulse
-    })
+        title = item["snippet"]["title"]
+        duration = item["contentDetails"]["duration"]
+
+        if "M" not in duration and "H" not in duration:
+            continue
+
+        if any(word in title.lower() for word in blacklist_keywords):
+            continue
+
+        dataset.append({
+            "title": title,
+            "viral": 1
+        })
+
+    next_page_token = response.get("nextPageToken")
+    if not next_page_token:
+        break
+
 
 # -------------------------------------------------
-# Sort by TrendPulse Score
+# 2️⃣ Collect NON-TRENDING Videos From Small Channels
 # -------------------------------------------------
-videos_data.sort(key=lambda x: x["score"], reverse=True)
+print("\nCollecting Non-Trending Videos...\n")
+
+existing_titles = set([x["title"] for x in dataset])
+non_trending_count = 0
+recent_after = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+seed_queries = ["vlog", "tutorial", "review", "challenge", "gameplay", "podcast"]
+
+for query in seed_queries:
+    next_page_token = None
+
+    while non_trending_count < NON_TRENDING_TARGET:
+
+        request = youtube.search().list(
+            part="snippet",
+            q=query,
+            regionCode=region,
+            order="date",
+            type="video",
+            publishedAfter=recent_after,
+            maxResults=50,
+            pageToken=next_page_token
+        )
+
+        response = request.execute()
+
+        if "items" not in response:
+            break
+
+        for item in response["items"]:
+
+            video_id = item["id"]["videoId"]
+
+            # Fetch video stats
+            video_request = youtube.videos().list(
+                part="statistics",
+                id=video_id
+            )
+
+            video_response = video_request.execute()
+
+            if "items" not in video_response or not video_response["items"]:
+                continue
+
+            stats = video_response["items"][0].get("statistics", {})
+
+            views = int(stats.get("viewCount", 0))
+
+            # Keep only low-view videos as non-trending samples.
+            if views > 10000:
+                continue
+
+            title = item["snippet"]["title"]
+
+            if title in existing_titles:
+                continue
+
+            if any(word in title.lower() for word in blacklist_keywords):
+                continue
+
+            dataset.append({
+                "title": title,
+                "viral": 0
+            })
+
+            existing_titles.add(title)
+            non_trending_count += 1
+
+            if non_trending_count >= NON_TRENDING_TARGET:
+                break
+
+        next_page_token = response.get("nextPageToken")
+
+        if not next_page_token:
+            break
+
+    if non_trending_count >= NON_TRENDING_TARGET:
+        break
+
+
+
+print("Trending samples:", len([x for x in dataset if x["viral"] == 1]))
+print("Non-Trending samples:", len([x for x in dataset if x["viral"] == 0]))
+
 
 # -------------------------------------------------
-# Print Results
+# Save Dataset
 # -------------------------------------------------
-for video in videos_data:
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+data_dir = os.path.join(BASE_DIR, "data")
+os.makedirs(data_dir, exist_ok=True)
 
-    print("=" * 80)
-    print("Title:", video["title"])
-    print("Category:", video["category"])
-    print("Subscribers:", video["subs"])
-    print("Views:", video["views"])
-    print("Likes:", video["likes"])
-    print("Comments:", video["comments"])
-    print("Hours Since Publish:", round(video["hours"], 2))
-    print("TrendPulse Score:", round(video["score"], 2))
+csv_path = os.path.join(data_dir, "trendpulse_dataset.csv")
+
+with open(csv_path, "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["title", "viral"])
+
+    for row in dataset:
+        writer.writerow([row["title"], row["viral"]])
+
+print("\nBalanced dataset saved at:", csv_path)
