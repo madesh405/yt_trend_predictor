@@ -154,9 +154,17 @@ for channel_id in channels:
     # ---- Label videos ----
     for video in videos:
 
-        title = video["snippet"]["title"]
-        stats = video["statistics"]
-        duration = video["contentDetails"]["duration"]
+        snippet = video.get("snippet", {})
+        stats = video.get("statistics", {})
+        content_details = video.get("contentDetails", {})
+
+        duration = content_details.get("duration")
+        if not duration:
+            continue
+
+        title = snippet.get("title", "")
+        if not title:
+            continue
 
         views = int(stats.get("viewCount", 0))
         likes = int(stats.get("likeCount", 0))
@@ -178,14 +186,18 @@ for channel_id in channels:
         if duration_seconds < 60:
             continue
 
+        published_at = snippet.get("publishedAt")
+        if not published_at:
+            continue
+
         publish_time = datetime.fromisoformat(
-            video["snippet"]["publishedAt"].replace("Z", "+00:00")
+            published_at.replace("Z", "+00:00")
         )
 
         dataset.append({
             "title": title,
             "title_length": len(title),
-            "caps_ratio": sum(1 for c in title if c.isupper()) / len(title),
+            "caps_ratio": sum(1 for c in title if c.isupper()) / len(title) if len(title) > 0 else 0,
             "views": views,
             "channel_avg_views": channel_avg_views,
             "performance_ratio": ratio,
