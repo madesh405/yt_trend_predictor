@@ -1,6 +1,7 @@
 import os
 import csv
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
@@ -15,7 +16,6 @@ CHANNEL_SAMPLE_SIZE = 400
 VIDEOS_PER_CHANNEL = 40
 
 
-
 # =========================================================
 # Load API
 # =========================================================
@@ -27,6 +27,8 @@ if not API_KEY:
 
 youtube = build("youtube", "v3", developerKey=API_KEY)
 region = input("Enter region code (IN, US, GB, etc.): ").upper()
+
+now = datetime.now(timezone.utc)
 
 
 # =========================================================
@@ -41,8 +43,10 @@ def safe_execute(request):
         return None
 
 
+# =========================================================
+# Duration Parser
+# =========================================================
 def parse_duration(duration):
-    import re
     hours = minutes = seconds = 0
     h = re.search(r'(\d+)H', duration)
     m = re.search(r'(\d+)M', duration)
@@ -88,7 +92,7 @@ print("Collected channels:", len(channels))
 
 
 # =========================================================
-# STEP 2 — Collect Videos (Search-based, no playlist errors)
+# STEP 2 — Collect Videos Per Channel
 # =========================================================
 print("\nCollecting videos per channel...\n")
 
@@ -97,6 +101,29 @@ nonviral_samples = []
 
 for channel_id in channels:
 
+    # ---------------------------------------------
+    # Channel Statistics
+    # ---------------------------------------------
+    channel_request = youtube.channels().list(
+        part="statistics",
+        id=channel_id
+    )
+
+    channel_response = safe_execute(channel_request)
+    if not channel_response or not channel_response["items"]:
+        continue
+
+    channel_stats = channel_response["items"][0]["statistics"]
+
+    subscriber_count = int(channel_stats.get("subscriberCount", 0))
+    total_channel_views = int(channel_stats.get("viewCount", 0))
+    channel_video_count = int(channel_stats.get("videoCount", 0))
+
+    views_per_video = total_channel_views / (channel_video_count + 1)
+
+    # ---------------------------------------------
+    # Fetch Videos (Recent Uploads)
+    # ---------------------------------------------
     search_request = youtube.search().list(
         part="id",
         channelId=channel_id,
@@ -162,6 +189,11 @@ for channel_id in channels:
         if "official music video" in title.lower():
             continue
 
+        description = snippet.get("description", "")
+        tags = " ".join(snippet.get("tags", []))
+
+        full_text = title + " " + description + " " + tags
+
         views = int(stats.get("viewCount", 0))
         likes = int(stats.get("likeCount", 0))
         comments = int(stats.get("commentCount", 0))
@@ -186,8 +218,14 @@ for channel_id in channels:
             published_at.replace("Z", "+00:00")
         )
 
+        age_hours = (now - publish_time).total_seconds() / 3600
+        velocity = views / (age_hours + 1)
+
+        like_ratio = likes / (views + 1)
+        comment_ratio = comments / (views + 1)
+
         sample = {
-            "title": title,
+            "full_text": full_text,
             "title_length": len(title),
             "caps_ratio": sum(1 for c in title if c.isupper()) / len(title),
             "views": views,
@@ -195,6 +233,11 @@ for channel_id in channels:
             "performance_ratio": ratio,
             "likes": likes,
             "comments": comments,
+            "like_ratio": like_ratio,
+            "comment_ratio": comment_ratio,
+            "velocity": velocity,
+            "subscriber_count": subscriber_count,
+            "views_per_video": views_per_video,
             "duration_sec": duration_seconds,
             "publish_hour": publish_time.hour,
             "viral": label
@@ -210,7 +253,6 @@ for channel_id in channels:
 # STEP 3 — Balance Dataset
 # =========================================================
 min_size = min(len(viral_samples), len(nonviral_samples))
-
 dataset = viral_samples[:min_size] + nonviral_samples[:min_size]
 
 print("\nViral samples:", len(viral_samples))
