@@ -8,12 +8,14 @@ from dotenv import load_dotenv
 
 
 # =========================================================
-# CONFIG
+# CONFIG (Quota Safe)
 # =========================================================
 MIN_RATIO = 2.0
 MAX_RATIO = 0.5
-CHANNEL_SAMPLE_SIZE = 400
-VIDEOS_PER_CHANNEL = 40
+
+# Reduced to avoid quota exhaustion
+CHANNEL_SAMPLE_SIZE = 150
+VIDEOS_PER_CHANNEL = 20
 
 
 # =========================================================
@@ -32,14 +34,24 @@ now = datetime.now(timezone.utc)
 
 
 # =========================================================
-# Safe Execute
+# Safe Execute (Shows Errors)
 # =========================================================
 def safe_execute(request):
     try:
-        return request.execute()
-    except HttpError:
+        response = request.execute()
+
+        # Detect API error inside response
+        if isinstance(response, dict) and "error" in response:
+            print("API ERROR:", response["error"])
+            return None
+
+        return response
+
+    except HttpError as e:
+        print("HTTP ERROR:", e)
         return None
-    except Exception:
+    except Exception as e:
+        print("OTHER ERROR:", e)
         return None
 
 
@@ -78,10 +90,11 @@ while len(channels) < CHANNEL_SAMPLE_SIZE:
     )
 
     response = safe_execute(request)
+
     if not response:
         break
 
-    for item in response["items"]:
+    for item in response.get("items", []):
         channels.add(item["snippet"]["channelId"])
 
     page_token = response.get("nextPageToken")
@@ -99,7 +112,9 @@ print("\nCollecting videos per channel...\n")
 viral_samples = []
 nonviral_samples = []
 
-for channel_id in channels:
+for idx, channel_id in enumerate(channels):
+
+    print(f"Processing channel {idx+1}/{len(channels)}")
 
     # ---------------------------------------------
     # Channel Statistics
@@ -110,10 +125,15 @@ for channel_id in channels:
     )
 
     channel_response = safe_execute(channel_request)
-    if not channel_response or not channel_response["items"]:
+
+    if not channel_response:
         continue
 
-    channel_stats = channel_response["items"][0]["statistics"]
+    items = channel_response.get("items", [])
+    if not items:
+        continue
+
+    channel_stats = items[0].get("statistics", {})
 
     subscriber_count = int(channel_stats.get("subscriberCount", 0))
     total_channel_views = int(channel_stats.get("viewCount", 0))
@@ -122,7 +142,7 @@ for channel_id in channels:
     views_per_video = total_channel_views / (channel_video_count + 1)
 
     # ---------------------------------------------
-    # Fetch Videos (Recent Uploads)
+    # Fetch Recent Videos
     # ---------------------------------------------
     search_request = youtube.search().list(
         part="id",
@@ -133,12 +153,14 @@ for channel_id in channels:
     )
 
     search_response = safe_execute(search_request)
+
     if not search_response:
         continue
 
     video_ids = [
         item["id"]["videoId"]
-        for item in search_response["items"]
+        for item in search_response.get("items", [])
+        if "videoId" in item.get("id", {})
     ]
 
     if not video_ids:
@@ -150,10 +172,14 @@ for channel_id in channels:
     )
 
     videos_response = safe_execute(videos_request)
+
     if not videos_response:
         continue
 
-    videos = videos_response["items"]
+    videos = videos_response.get("items", [])
+
+    if not videos:
+        continue
 
     view_counts = [
         int(v.get("statistics", {}).get("viewCount", 0))
@@ -185,7 +211,6 @@ for channel_id in channels:
         if not title:
             continue
 
-        # Remove obvious music spam
         if "official music video" in title.lower():
             continue
 
