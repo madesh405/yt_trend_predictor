@@ -19,3 +19,4 @@ data/processed/
 
 # Windows
 Thumbs.db
+scripts/collect_data_ytdlp.py
