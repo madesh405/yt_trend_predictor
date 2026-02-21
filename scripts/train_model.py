@@ -38,20 +38,17 @@ print(df["viral"].value_counts())
 
 
 # -------------------------------------------------
-# Feature Definitions
+# EARLY FEATURES ONLY
 # -------------------------------------------------
 TEXT_COLUMN = "full_text"
 
 NUMERIC_COLUMNS = [
     "title_length",
     "caps_ratio",
-    "like_ratio",
-    "comment_ratio",
-    "velocity",
-    "subscriber_count",
-    "views_per_video",
     "duration_sec",
-    "publish_hour"
+    "publish_hour",
+    "subscriber_count",
+    "views_per_video"
 ]
 
 X_text = df[TEXT_COLUMN].fillna("")
@@ -82,7 +79,7 @@ X_numeric_sparse = csr_matrix(X_numeric_scaled)
 
 
 # -------------------------------------------------
-# Combine Features
+# Combine
 # -------------------------------------------------
 X_final = hstack([X_text_vec, X_numeric_sparse])
 
@@ -98,7 +95,7 @@ y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
 
 # -------------------------------------------------
-# XGBoost Model
+# XGBoost Early Model
 # -------------------------------------------------
 model = XGBClassifier(
     n_estimators=400,
@@ -108,8 +105,7 @@ model = XGBClassifier(
     colsample_bytree=0.8,
     objective="binary:logistic",
     eval_metric="logloss",
-    random_state=42,
-    use_label_encoder=False
+    random_state=42
 )
 
 model.fit(X_train, y_train)
@@ -124,15 +120,15 @@ y_prob = model.predict_proba(X_test)[:, 1]
 accuracy = accuracy_score(y_test, y_pred)
 roc = roc_auc_score(y_test, y_prob)
 
-print("\n=== DEFAULT THRESHOLD (0.5) ===")
-print("Test Accuracy:", accuracy)
+print("\n=== EARLY MODEL RESULTS (0.5 threshold) ===")
+print("Accuracy:", accuracy)
 print("ROC AUC:", roc)
 print("\nClassification Report:")
 print(classification_report(y_test, y_pred))
 
 
 # -------------------------------------------------
-# Optimal Threshold (F1)
+# Optimize Threshold
 # -------------------------------------------------
 precisions, recalls, thresholds = precision_recall_curve(y_test, y_prob)
 
@@ -141,20 +137,20 @@ f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
 best_index = np.argmax(f1_scores)
 best_threshold = thresholds[best_index]
 
-print("\nBest Threshold (F1 optimized):", best_threshold)
+print("\nBest Threshold:", best_threshold)
 print("Best F1 Score:", f1_scores[best_index])
 
 y_pred_optimal = (y_prob >= best_threshold).astype(int)
 
-print("\n=== OPTIMIZED THRESHOLD RESULTS ===")
+print("\n=== OPTIMIZED EARLY MODEL RESULTS ===")
 print(classification_report(y_test, y_pred_optimal))
 
 
 # -------------------------------------------------
-# Save Everything
+# Save
 # -------------------------------------------------
-joblib.dump(model, os.path.join(models_dir, "hybrid_model.pkl"))
-joblib.dump(vectorizer, os.path.join(models_dir, "vectorizer.pkl"))
-joblib.dump(scaler, os.path.join(models_dir, "scaler.pkl"))
+joblib.dump(model, os.path.join(models_dir, "early_model.pkl"))
+joblib.dump(vectorizer, os.path.join(models_dir, "early_vectorizer.pkl"))
+joblib.dump(scaler, os.path.join(models_dir, "early_scaler.pkl"))
 
-print("\nXGBoost Model Saved Successfully.")
+print("\nEarly Prediction Model Saved Successfully.")
