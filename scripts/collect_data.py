@@ -250,6 +250,7 @@ for idx, channel_id in enumerate(channels):
         comment_ratio = comments / (views + 1)
 
         sample = {
+            "channel_id": channel_id,  
             "full_text": full_text,
             "title_length": len(title),
             "caps_ratio": sum(1 for c in title if c.isupper()) / len(title),
@@ -259,7 +260,7 @@ for idx, channel_id in enumerate(channels):
             "likes": likes,
             "comments": comments,
             "like_ratio": like_ratio,
-            "comment_ratio": comment_ratio,
+            "comment_ratio": comment_ratio, 
             "velocity": velocity,
             "subscriber_count": subscriber_count,
             "views_per_video": views_per_video,
