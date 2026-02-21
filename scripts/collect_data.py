@@ -13,9 +13,8 @@ from dotenv import load_dotenv
 MIN_RATIO = 2.0
 MAX_RATIO = 0.5
 
-# Reduced to avoid quota exhaustion
-CHANNEL_SAMPLE_SIZE = 150
-VIDEOS_PER_CHANNEL = 20
+CHANNEL_SAMPLE_SIZE = 300
+VIDEOS_PER_CHANNEL = 30
 
 
 # =========================================================
