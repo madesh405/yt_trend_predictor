@@ -1,22 +1,53 @@
-# Python cache
+# ----------------------------
+# Python
+# ----------------------------
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
 
-# Virtual environment
+# ----------------------------
+# Virtual Environment
+# ----------------------------
+.venv/
 venv/
+env/
+
+# ----------------------------
+# Environment Variables
+# ----------------------------
 .env
 
-# Data files
-data/raw/
-data/processed/
-*.csv
+# ----------------------------
+# Data
+# ----------------------------
+data/*.csv
+data/*.xlsx
+data/*.json
 
+# ----------------------------
+# Models
+# ----------------------------
+models/*.pkl
+models/*.joblib
+
+# ----------------------------
 # Jupyter
+# ----------------------------
 .ipynb_checkpoints/
 
+# ----------------------------
 # VS Code
+# ----------------------------
 .vscode/
 
-# Windows
+# ----------------------------
+# OS Files
+# ----------------------------
+.DS_Store
 Thumbs.db
 scripts/collect_data_ytdlp.py
