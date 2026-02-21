@@ -30,18 +30,19 @@ views = float(input("Enter current views: "))
 likes = float(input("Enter current likes: "))
 comments = float(input("Enter current comments: "))
 subs = float(input("Enter channel subscriber count: "))
+views_per_video = float(input("Enter channel avg views per video: "))
+velocity = float(input("Enter current view velocity (views/hour): "))
 duration_sec = float(input("Enter video duration (seconds): "))
 publish_hour = int(input("Enter publish hour (0-23): "))
 
+
 # =========================================================
-# FEATURE ENGINEERING (MATCH TRAINING FEATURES)
+# Feature Engineering
 # =========================================================
 
-# Safe division
 like_ratio = likes / views if views > 0 else 0
 comment_ratio = comments / views if views > 0 else 0
 
-# Title features
 caps_ratio = (
     sum(1 for c in title if c.isupper()) / len(title)
     if len(title) > 0 else 0
@@ -49,62 +50,23 @@ caps_ratio = (
 
 title_length = len(title.split())
 
-# =========================================================
-# BUILD NUMERIC DATAFRAME
-# IMPORTANT: Must match training feature names exactly
-# =========================================================
 
 numeric_data = {
+    "title_length": title_length,
+    "caps_ratio": caps_ratio,
     "like_ratio": like_ratio,
     "comment_ratio": comment_ratio,
-    "caps_ratio": caps_ratio,
+    "velocity": velocity,
+    "subscriber_count": subs,
+    "views_per_video": views_per_video,
     "duration_sec": duration_sec,
     "publish_hour": publish_hour,
-    "title_length": title_length,
 }
 
 numeric_df = pd.DataFrame([numeric_data])
 
-# Ensure correct column order
 expected_columns = scaler.feature_names_in_
 numeric_df = numeric_df.reindex(columns=expected_columns, fill_value=0)
 
-# Scale numeric features
 scaled_numeric = scaler.transform(numeric_df)
 
-# =========================================================
-# TEXT FEATURES
-# =========================================================
-text_features = vectorizer.transform([title])
-
-# Combine text + numeric
-X_final = np.hstack((text_features.toarray(), scaled_numeric))
-
-# =========================================================
-# PREDICTION
-# =========================================================
-prediction = model.predict(X_final)[0]
-probabilities = model.predict_proba(X_final)[0]
-
-prob_non_viral = probabilities[0]
-prob_viral = probabilities[1]
-
-# =========================================================
-# SMART THRESHOLD
-# =========================================================
-if prob_viral > 0.75:
-    confidence = "🔥 HIGH Viral Potential"
-elif prob_viral > 0.60:
-    confidence = "⚡ Moderate Viral Potential"
-else:
-    confidence = "❄ Low Viral Potential"
-
-# =========================================================
-# OUTPUT
-# =========================================================
-print("\nPrediction Results")
-print("=" * 40)
-print(f"Viral Probability: {prob_viral:.2f}")
-print(f"Non-Viral Probability: {prob_non_viral:.2f}")
-print(f"Model Decision: {'VIRAL' if prediction == 1 else 'NON-VIRAL'}")
-print(f"Confidence Level: {confidence}")
