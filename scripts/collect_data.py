@@ -1,305 +1,147 @@
 import os
-import csv
-import re
-from datetime import datetime, timezone
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from dotenv import load_dotenv
+import pandas as pd
+import joblib
+import numpy as np
+
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.metrics import (
+    classification_report,
+    accuracy_score,
+    roc_auc_score
+)
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+from textblob import TextBlob
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+
+# -------------------------------------------------
+# Paths
+# -------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+data_path = os.path.join(BASE_DIR, "data", "trendpulse_channel_relative.csv")
+models_dir = os.path.join(BASE_DIR, "models")
+os.makedirs(models_dir, exist_ok=True)
+
+
+# -------------------------------------------------
+# Load Dataset
+# -------------------------------------------------
+df = pd.read_csv(data_path)
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+print("\nDataset Size:", len(df))
+
+
+# =================================================
+# 🔥 NLP FEATURE ENGINEERING
+# =================================================
+analyzer = SentimentIntensityAnalyzer()
+
+def extract_nlp_features(text):
+    blob = TextBlob(text)
+
+    polarity = blob.sentiment.polarity
+    subjectivity = blob.sentiment.subjectivity
+
+    vader_score = analyzer.polarity_scores(text)["compound"]
+
+    exclamations = text.count("!")
+    questions = text.count("?")
+
+    word_count = len(text.split())
+    unique_words = len(set(text.split()))
+    lexical_diversity = unique_words / (word_count + 1)
+
+    return pd.Series([
+        polarity,
+        subjectivity,
+        vader_score,
+        exclamations,
+        questions,
+        lexical_diversity
+    ])
+
+
+df[[
+    "polarity",
+    "subjectivity",
+    "vader_score",
+    "exclamations",
+    "questions",
+    "lexical_diversity"
+]] = df["full_text"].fillna("").apply(extract_nlp_features)
+
+
+# =================================================
+# Combine With Numeric Features
+# =================================================
+NUMERIC_COLUMNS = [
+    # Original
+    "title_length",
+    "caps_ratio",
+    "duration_sec",
+    "publish_hour",
+    "subscriber_count",
+    "views_per_video",
+
+    # Engagement
+    "like_ratio",
+    "comment_ratio",
+    "velocity",
+
+    # NLP
+    "polarity",
+    "subjectivity",
+    "vader_score",
+    "exclamations",
+    "questions",
+    "lexical_diversity"
+]
+
+X = df[NUMERIC_COLUMNS].fillna(0)
+y = df["viral"]
+groups = df["channel_id"]
 
 
-# =========================================================
-# CONFIG (Quota Safe)
-# =========================================================
-MIN_RATIO = 2.0
-MAX_RATIO = 0.5
+# -------------------------------------------------
+# Scale
+# -------------------------------------------------
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
 
-CHANNEL_SAMPLE_SIZE = 300
-VIDEOS_PER_CHANNEL = 30
 
+# -------------------------------------------------
+# Channel-wise Split
+# -------------------------------------------------
+gss = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
+train_idx, test_idx = next(gss.split(X_scaled, y, groups))
 
-# =========================================================
-# Load API
-# =========================================================
-load_dotenv()
-API_KEY = os.getenv("YOUTUBE_API_KEY")
+X_train, X_test = X_scaled[train_idx], X_scaled[test_idx]
+y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-if not API_KEY:
-    raise ValueError("Missing YOUTUBE_API_KEY")
 
-youtube = build("youtube", "v3", developerKey=API_KEY)
-region = input("Enter region code (IN, US, GB, etc.): ").upper()
+# =================================================
+# Logistic Regression
+# =================================================
+model = LogisticRegression(max_iter=2000, random_state=42)
+model.fit(X_train, y_train)
 
-now = datetime.now(timezone.utc)
+y_pred = model.predict(X_test)
+y_prob = model.predict_proba(X_test)[:, 1]
 
+print("\n=== RESULTS WITH NLP + ENGAGEMENT ===")
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print("ROC AUC:", roc_auc_score(y_test, y_prob))
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
 
-# =========================================================
-# Safe Execute (Shows Errors)
-# =========================================================
-def safe_execute(request):
-    try:
-        response = request.execute()
 
-        # Detect API error inside response
-        if isinstance(response, dict) and "error" in response:
-            print("API ERROR:", response["error"])
-            return None
+# -------------------------------------------------
+# Save
+# -------------------------------------------------
+joblib.dump(model, os.path.join(models_dir, "early_model.pkl"))
+joblib.dump(scaler, os.path.join(models_dir, "early_scaler.pkl"))
 
-        return response
-
-    except HttpError as e:
-        print("HTTP ERROR:", e)
-        return None
-    except Exception as e:
-        print("OTHER ERROR:", e)
-        return None
-
-
-# =========================================================
-# Duration Parser
-# =========================================================
-def parse_duration(duration):
-    hours = minutes = seconds = 0
-    h = re.search(r'(\d+)H', duration)
-    m = re.search(r'(\d+)M', duration)
-    s = re.search(r'(\d+)S', duration)
-
-    if h: hours = int(h.group(1))
-    if m: minutes = int(m.group(1))
-    if s: seconds = int(s.group(1))
-
-    return hours*3600 + minutes*60 + seconds
-
-
-# =========================================================
-# STEP 1 — Collect Channels from Trending Videos
-# =========================================================
-print("\nCollecting active channels from trending videos...\n")
-
-channels = set()
-page_token = None
-
-while len(channels) < CHANNEL_SAMPLE_SIZE:
-
-    request = youtube.videos().list(
-        part="snippet",
-        chart="mostPopular",
-        regionCode=region,
-        maxResults=50,
-        pageToken=page_token
-    )
-
-    response = safe_execute(request)
-
-    if not response:
-        break
-
-    for item in response.get("items", []):
-        channels.add(item["snippet"]["channelId"])
-
-    page_token = response.get("nextPageToken")
-    if not page_token:
-        break
-
-print("Collected channels:", len(channels))
-
-
-# =========================================================
-# STEP 2 — Collect Videos Per Channel
-# =========================================================
-print("\nCollecting videos per channel...\n")
-
-viral_samples = []
-nonviral_samples = []
-
-for idx, channel_id in enumerate(channels):
-
-    print(f"Processing channel {idx+1}/{len(channels)}")
-
-    # ---------------------------------------------
-    # Channel Statistics
-    # ---------------------------------------------
-    channel_request = youtube.channels().list(
-        part="statistics",
-        id=channel_id
-    )
-
-    channel_response = safe_execute(channel_request)
-
-    if not channel_response:
-        continue
-
-    items = channel_response.get("items", [])
-    if not items:
-        continue
-
-    channel_stats = items[0].get("statistics", {})
-
-    subscriber_count = int(channel_stats.get("subscriberCount", 0))
-    total_channel_views = int(channel_stats.get("viewCount", 0))
-    channel_video_count = int(channel_stats.get("videoCount", 0))
-
-    views_per_video = total_channel_views / (channel_video_count + 1)
-
-    # ---------------------------------------------
-    # Fetch Recent Videos
-    # ---------------------------------------------
-    search_request = youtube.search().list(
-        part="id",
-        channelId=channel_id,
-        type="video",
-        order="date",
-        maxResults=VIDEOS_PER_CHANNEL
-    )
-
-    search_response = safe_execute(search_request)
-
-    if not search_response:
-        continue
-
-    video_ids = [
-        item["id"]["videoId"]
-        for item in search_response.get("items", [])
-        if "videoId" in item.get("id", {})
-    ]
-
-    if not video_ids:
-        continue
-
-    videos_request = youtube.videos().list(
-        part="snippet,statistics,contentDetails",
-        id=",".join(video_ids)
-    )
-
-    videos_response = safe_execute(videos_request)
-
-    if not videos_response:
-        continue
-
-    videos = videos_response.get("items", [])
-
-    if not videos:
-        continue
-
-    view_counts = [
-        int(v.get("statistics", {}).get("viewCount", 0))
-        for v in videos
-    ]
-
-    if not view_counts:
-        continue
-
-    channel_avg_views = sum(view_counts) / len(view_counts)
-
-    for video in videos:
-
-        snippet = video.get("snippet", {})
-        stats = video.get("statistics", {})
-        content_details = video.get("contentDetails", {})
-
-        duration = content_details.get("duration")
-        if not duration:
-            continue
-
-        duration_seconds = parse_duration(duration)
-
-        # Remove Shorts
-        if duration_seconds <= 90:
-            continue
-
-        title = snippet.get("title", "")
-        if not title:
-            continue
-
-        if "official music video" in title.lower():
-            continue
-
-        description = snippet.get("description", "")
-        tags = " ".join(snippet.get("tags", []))
-
-        full_text = title + " " + description + " " + tags
-
-        views = int(stats.get("viewCount", 0))
-        likes = int(stats.get("likeCount", 0))
-        comments = int(stats.get("commentCount", 0))
-
-        if channel_avg_views == 0:
-            continue
-
-        ratio = views / channel_avg_views
-
-        if ratio >= MIN_RATIO:
-            label = 1
-        elif ratio <= MAX_RATIO:
-            label = 0
-        else:
-            continue
-
-        published_at = snippet.get("publishedAt")
-        if not published_at:
-            continue
-
-        publish_time = datetime.fromisoformat(
-            published_at.replace("Z", "+00:00")
-        )
-
-        age_hours = (now - publish_time).total_seconds() / 3600
-        velocity = views / (age_hours + 1)
-
-        like_ratio = likes / (views + 1)
-        comment_ratio = comments / (views + 1)
-
-        sample = {
-            "channel_id": channel_id,  
-            "full_text": full_text,
-            "title_length": len(title),
-            "caps_ratio": sum(1 for c in title if c.isupper()) / len(title),
-            "views": views,
-            "channel_avg_views": channel_avg_views,
-            "performance_ratio": ratio,
-            "likes": likes,
-            "comments": comments,
-            "like_ratio": like_ratio,
-            "comment_ratio": comment_ratio, 
-            "velocity": velocity,
-            "subscriber_count": subscriber_count,
-            "views_per_video": views_per_video,
-            "duration_sec": duration_seconds,
-            "publish_hour": publish_time.hour,
-            "viral": label
-        }
-
-        if label == 1:
-            viral_samples.append(sample)
-        else:
-            nonviral_samples.append(sample)
-
-
-# =========================================================
-# STEP 3 — Balance Dataset
-# =========================================================
-min_size = min(len(viral_samples), len(nonviral_samples))
-dataset = viral_samples[:min_size] + nonviral_samples[:min_size]
-
-print("\nViral samples:", len(viral_samples))
-print("Non-viral samples:", len(nonviral_samples))
-print("Balanced dataset size:", len(dataset))
-
-
-# =========================================================
-# SAVE DATASET
-# =========================================================
-if dataset:
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    data_dir = os.path.join(BASE_DIR, "data")
-    os.makedirs(data_dir, exist_ok=True)
-
-    csv_path = os.path.join(data_dir, "trendpulse_channel_relative.csv")
-
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=dataset[0].keys())
-        writer.writeheader()
-        writer.writerows(dataset)
-
-    print("\nDataset saved at:", csv_path)
-else:
-    print("No labeled samples collected.")
+print("\nEnhanced Model Saved Successfully.")
